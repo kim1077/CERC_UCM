@@ -38,15 +38,16 @@ class H_DP_Merced_Physical:
            obj.V=pi*simobj.fmuinpy.get('tankMB_H2_1.Radius')**2*(simobj.fmuinpy.get('tankMB_H2_1.h_startA')+simobj.fmuinpy.get('tankMB_H2_1.h_startB'))
            obj.rho=simobj.fmuinpy.get('tankMB_H2_1.mediumB.d')
            obj.cv=4.2 # kJ/kg-C
-           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(55)-f2c(40))# [kJ] worst case
+           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(65)-f2c(40))# [kJ] worst case
            obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           #obj.COP=;
        else:
-           obj.V=pi*10**2*15
+           obj.V=pi*20**2*15
            obj.rho=1e3
            obj.cv=4.2 # kJ/kg-C
-           obj.Cs_tonhr=1000*12
-           obj.Cs=tonhr2kJ(obj.Cs_tonhr)
-           
+           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(65)-f2c(40))# [kJ] worst case
+           obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           obj.COP=7;
        
        
        # define grid, x= z, Tsc, Tsh
@@ -56,7 +57,7 @@ class H_DP_Merced_Physical:
                     linspace(f2c(50),f2c(70),3)]  
        # define grid, u=TCHeSP, mCH
        obj.ju_grid=[linspace(f2c(35),f2c(45),num=3),
-                   linspace(1e-3,1.5*gpm2kgs(2*1e3),num=10)]  
+                   linspace(1e-3,gpm2kgs(3*1e3),num=10)]  
        obj.n=len(obj.ix_grid)
        obj.m=len(obj.ju_grid)
    
@@ -118,34 +119,18 @@ class H_DP_Merced_Physical:
         # h(x)=0
         # g(x)<=0
         # wk=Building load, price schedule, nonHVACP, Psolargen
-        QBL=wk[0]
-        ER=wk[1]
-        PnonHVAC=wk[2]
-        Psolarpv=wk[3]
-        mr=max(wk[4],1e-3)
-        
         z=xk[0]
-        Tsc=xk[1]
-        Tsh=xk[2]
-        
         TCHe=uk[0]
         mCH=uk[1]
         
-        Tr=f2c(40)+QBL/(mr*obj.cv)
-        
-        if mCH>=mr: # charge: cold in hot out
-            Tmix=(mCH-mr)/mCH*Tsh+mr/mCH*Tr
-        else:
-            Tmix=Tr
-            
-        QCHL=mCH*obj.cv*(Tmix-TCHe)
+        QCHL=obj.Transform(xk,uk,wk)
             
         zp1=xkp1[0] 
         #QCHL=QBL0-
         # note stage bounds aren't applied to this
         constraints=  [0.1<=zp1, zp1<=0.9,
-                      f2c(34)<=TCHe, TCHe<=f2c(50), 0<=mCH, mCH<=10*gpm2kgs(2*1e3), 
-                      QCHL>=0, QCHL<=5*ton2kW(1e3)]
+                      f2c(34)<=TCHe, TCHe<=f2c(50), 0<=mCH, mCH<=gpm2kgs(3*1e3), 
+                      QCHL>=0, QCHL<=ton2kW(3*1e3)]
              #      ( QDIS <= ton2kW(1e3)+ 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) ),
              #      (-QDIS <= ton2kW(1e3) + 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) ),
              #      (QCHL>=0) & (QCHL<=ton2kW(1e3))
@@ -154,29 +139,13 @@ class H_DP_Merced_Physical:
         return feasible
     
     def phi(obj,xk,uk,wk):
-        QBL=wk[0]
+        
         ER=wk[1]
         PnonHVAC=wk[2]
         Psolarpv=wk[3]
-        mr=max(wk[4],1e-3)
+        QCHL=obj.Transform(xk,uk,wk)
         
-        z=xk[0]
-        Tsc=xk[1]
-        Tsh=xk[2]
-        
-        TCHe=uk[0]
-        mCH=uk[1]
-        
-        Tr=f2c(40)+QBL/(mr*obj.cv)
-                
-        if mCH>mr: # charge: cold in hot out
-            Tmix=(mCH-mr)/mCH*Tsh+mr/mCH*Tr
-        else:
-            Tmix=Tr
-        QCHL=mCH*obj.cv*(Tmix-TCHe)
-        
-        
-        COP=5.
+        COP=obj.COP
         stagecost=ER*max(1./COP*QCHL+PnonHVAC-Psolarpv,0);
         return stagecost
     
@@ -307,6 +276,7 @@ class H_DP_Merced_Physical:
         x=nan*random.random((obj.Np+1,obj.n))
         UTR=nan*random.random((obj.Np,obj.m))
         phik=nan*random.random((obj.Np,1))
+        QCHL=nan*random.random((obj.Np,1))
         x[0,:]=x0.T;
         T=arange(0,obj.Np+1,1)
         for k in range(obj.Np):
@@ -316,6 +286,7 @@ class H_DP_Merced_Physical:
                 UTR[k,j]=Uoptfuncofx(obj.xcut(mat(x[k,:]).T));
             x[k+1,:]=   obj.f(mat(x[k,:]).T,mat(UTR[k,:]).T,wk).T
             phik[k]=obj.phi(mat(x[k,:]).T,mat(UTR[k,:]).T,wk)
+            QCHL[k]=obj.Transform(mat(x[k,:]).T,mat(UTR[k,:]).T,wk)
             
         if len(varargin) is not 0:
             figure(2)
@@ -329,34 +300,62 @@ class H_DP_Merced_Physical:
             grid(True)
             figure(3)
             subplot(211)
-            #plot(T[:-1],hstack((kW2ton(H_iscolumn(W[:,0])),kW2ton(UTR))),'-o')
-            #legend(['QBL','QDIS'])
+            plot(T[:-1],hstack((kW2ton(H_iscolumn(W[:,0])),kW2ton(QCHL))),'-o')
+            legend(['QBL','QCHL'])
             ylabel('ton')            
             title('MPCthink')
+            grid(True)
             print phik.shape
             subplot(212)
-            plot(T[:-1],hstack((H_iscolumn(W[:,2]),H_iscolumn(W[:,3]),phik)),'-o')
-            legend(['Pnonhvac','Psolar','phik $'])
+            plot(T[:-1],hstack((H_iscolumn(QCHL/obj.COP),H_iscolumn(W[:,3]))),'-o')
+            legend(['P_{HVAC}','P_{solar}']);
+            ylabel('kW')
+            xlabel('hour')
+            grid(True)
             
         print phik.sum()
         return UTR, phik.sum()
+        
+    def Transform(obj,xk,uk,wk):
+        QBL=wk[0]
+        ER=wk[1]
+        PnonHVAC=wk[2]
+        Psolarpv=wk[3]
+        mr=max(wk[4],1e-3)
+        
+        z=xk[0]
+        Tsc=xk[1]
+        Tsh=xk[2]
+        
+        TCHe=uk[0]
+        mCH=uk[1]
+        
+        Tr=f2c(40)+QBL/(mr*obj.cv)
+                
+        if mCH>mr: # charge: cold in hot out
+            Tmix=(mCH-mr)/mCH*Tsh+mr/mCH*Tr
+        else:
+            Tmix=Tr
+        QCHL=mCH*obj.cv*(Tmix-TCHe)
+        return QCHL
         
         
             
 #%% test object
 if __name__ is '__main__':
+    import scipy.signal
     close('all')
     MOD=list()
     Ts_hr=1.;
-    Np=24;
+    Np=2*24;
     Nblk=Np;
     obj=H_DP_Merced_Physical(MOD,Ts_hr,Np,Nblk)
     T=arange(0,(Np+1)*Ts_hr*3600,3600)
-    W=hstack((H_schedule(T[:-1],[7,19],ton2kW(1e3),0),
-              H_schedule(T[:-1],[7,19],3,1),
-              H_schedule(T[:-1],[7,19],1*1000,0), 
-              H_schedule(T[:-1],[12,15],1*1300,0), 
-              H_schedule(T[:-1],[7,19],gpm2kgs(2*1e3),0))) 
+    W=hstack((filtfilt(3,H_schedule(T[:-1],[7,19],ton2kW(1.5*1e3),0)), #BL
+              H_schedule(T[:-1],[7,19],3,1),   # price
+              filtfilt(3,H_schedule(T[:-1],[7,19],0*1000,0)),  # PnonHVAC
+              filtfilt(3,H_schedule(T[:-1],[10,15],0*1300,0)), #Psolar
+              filtfilt(3,H_schedule(T[:-1],[7,19],gpm2kgs(1.5*1e3),0)))) # mreturn 
     # Building load, price schedule, nonHVACP, Psolargen, mr
     
     x0=mat([0.2, f2c(40), f2c(40)+5]).T # z, Tc, Th

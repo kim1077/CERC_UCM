@@ -1,18 +1,40 @@
-#==============================================================================
-# demo for H_simobj
-#==============================================================================
-from matplotlib.pylab import *
-from H_simobj import H_simobj
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+from __future__ import print_function
+import sys
+import pyfmi
+import pymodelica
+from pandas import *
 from H_utility import *
+import numpy as np
 from numpy import *
+import matplotlib.pyplot as mp
+import time
+from scipy.linalg import block_diag
+import scipy as sp
+from H_blkdiag import H_blkdiag
+import PnP_subfunc
+from PnP_subfunc import H_vec
+import scipy as sp
+import scipy.interpolate
+import control.matlab as ctool
+from H_simobj import H_simobj
 import os
+
+
+# In[2]:
+
+
 
 currentdir='/home/adun6414/Work/CERC_UCM'
 os.chdir(currentdir)
 
 
 # configuration
-dt=60*60; # 30 min sampling time
+dt=60*60; # 60 min sampling time
 start_time=H_date2simtime(to_datetime('2018-08-01 00:00'),'2018')
 final_time=H_date2simtime(to_datetime('2018-08-03 23:50'),'2018')
 simtimes=arange(start_time,final_time,dt)
@@ -38,8 +60,8 @@ elif testcase==2:
 
 idmodel=('CASE900Load1576283834') # not used for UC-Merced
 
-obj=H_simobj(dt=dt,start_time=start_time,final_time=final_time,modelname=modelname,modelicafile=modelicafile,idmodel=idmodel,
-             key_u=key_u,key_w=key_w,key_y=key_y,key_x=key_x)
+obj=H_simobj(dt=dt,start_time=start_time,final_time=final_time,modelname=modelname,modelicafile=modelicafile,
+             idmodel=idmodel,key_u=key_u,key_w=key_w,key_y=key_y,key_x=key_x)
              
 #% data loading and resampling
 os.chdir('/home/adun6414/Work/CERC_UCM/Fig_n_data')
@@ -52,7 +74,6 @@ DATA=dummy[['time','QBL','Twb','QCHLsum']].fillna(method='ffill')
 DATA['Pow']=dummy[['PCHsum','PCTtot']].sum(axis=1)
 del DATARAW, dummy
 os.chdir(currentdir)
-
 
 #% specify disturbances
 t_schedule=simtimes
@@ -71,14 +92,56 @@ w=hstack((QBL,ER,PnonHVAC,Psolarpv))
 
 schedule={'u': u, 'w': w, 't': H_iscolumn(t_schedule)}
 # conventional control simulation
-(res0,IN0)=obj.simulate_schedule(x0_val,schedule,wannaplot=True)
+(res,IN0)=obj.simulate_schedule(x0_val,schedule,wannaplot=True)
 
-#%%MPC configuration
+
+# In[3]:
+
+
+data=DataFrame(columns=obj.key_u+obj.key_y+obj.key_w)  
+for k in obj.key_u+obj.key_y+obj.key_w:
+    data[k]=res[k]
+data.index=data.time
+figure(100)
+plot(to_datetime(H_simtime2date(data['time'],'2018')),kW2ton(data['Output[3]']))     
+plot(to_datetime(H_simtime2date(data['time'],'2018')),kW2ton(data['Output[4]']),'r')
+legend(['QCHL','QDIS'])
+ylabel('ton')
+grid(True)
+
+data.plot(x='time',y=[k for k in obj.key_y if '.m_flow' in k])
+grid(True)
+
+figure(102)
+plot(to_datetime(H_simtime2date(data['time'],'2018')),data['Sensor_msup.m_flow'].apply(kgs2gpm))
+ylabel('return flow rate [gpm]')
+grid(True)
+
+data.plot(x='time',y=[k for k in obj.key_y if 'Height[3]' in k])    
+title('SOC')
+grid(True)
+
+
+# In[4]:
+
+
 from H_DP_Merced_Simple import H_DP_Merced_Simple
+
 #obj.getidmodel(idmodel='CASE900Load1576283834') # unused in DP
 obj.MPCsetup(MPCobj=H_DP_Merced_Simple,Npday=2) 
 #Q: sampling time of simluation output is the same as control implementation period?
 obj.does_local_follow_mpc(x0_val)
+
+
+# In[5]:
+
+
 #%% MPC evaulation inputs: starts, final time, IC
 obj.evaluate_mpc(x0_val)
+
+
+# In[6]:
+
+
 obj.analysis_performance()
+

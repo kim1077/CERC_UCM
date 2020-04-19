@@ -100,7 +100,10 @@ class H_simobj:
         obj.Np= int(varargindic['Npday']*24*3600./obj.dt)     # 24 hr prediction
         obj.Nblk= obj.Np#Np/6 # 30 min size blk for time scale seperation
         obj.Ts_hr=1.*obj.dt/3600 # in hr
-        obj.MPCobj=varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj)
+        if 'test' in varargindic:  
+            obj.MPCobj=varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj,test=varargindic['test'])
+        else:
+            obj.MPCobj=varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj)
 
    
     def does_local_follow_mpc(obj,x0_val): # one shot MPC and feed it to system (open-loop control)
@@ -122,6 +125,7 @@ class H_simobj:
         # optimization : (Vok,Uok)=obj.MPCobj.BellmanEq(Ws)   
         Uop,totalcost=obj.MPCobj.controller(xk,Ws,0)
         (hatx,hatphi)=obj.MPCobj.modelprediction(xk,Ws,Uop,1)
+        #Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot=False,adjustNp='y')
         
         (uop,zop)=obj.MPCobj.IOmapping(Uop,Ws)
         
@@ -146,7 +150,7 @@ class H_simobj:
 
             # supervisory level control ===========================================
             # prediction
-            pre_t=cur_t+linspace(0,obj.MPCobj.Np-1,obj.MPCobj.Np)*obj.dt # in sec 
+            pre_t=cur_t+linspace(0,obj.MPCobj.Np0-1,obj.MPCobj.Np0)*obj.dt # in sec <<< Bug found, it should be Np0 not Np
             #Q: Simulation output sampling time = MPC sampling time ?
             
                 
@@ -158,14 +162,16 @@ class H_simobj:
                 pre_tcap=pre_t
                 pre_tcap[pre_t>=max(obj.t_schedule)]=max(obj.t_schedule)
                 Ws=mat(WInterpFun(pre_tcap)).T
+            if Ws.shape[0] != obj.MPCobj.Np0:
+                error('The size of W prediction should be the same as the original prediction horizon')
             
             
             #optimization
-            Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot='no',adjustNp='y')
+            Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot=False,adjustNp='y')
             (uop,zop)=obj.MPCobj.IOmapping(Uop,Ws)
         
             IN=(obj.key_u+obj.key_w,np.array(hstack((H_iscolumn(pre_t[:2]),kron(array([[1],[1]]),uop[0,:]),
-                                                     kron(array([[1],[1]]),Ws[0,:])))))
+                                                     kron(array([[1],[1]]),Ws[0,:]))))) # Fixed inputs, no interpolation
         
             # system response to control
             if k != 0:
@@ -195,9 +201,9 @@ class H_simobj:
         data.index=data.time
         obj.res=res
         figure(100)
-        plot(data['time'],kW2ton(data['Output[3]']))     
-        plot(data['time'],kW2ton(data['Output[4]']),'r')
-        plot(pre_t,kW2ton(hstack((Ws[:,0]-Uop,Uop))),'o')
+        plot(to_datetime(H_simtime2date(data['time'],'2018')),kW2ton(data['Output[3]']))     
+        plot(to_datetime(H_simtime2date(data['time'],'2018')),kW2ton(data['Output[4]']),'r')
+        plot(to_datetime(H_simtime2date(pre_t,'2018')),kW2ton(hstack((Ws[:,0]-Uop,Uop))),'o')
         legend(['QCHL','QDIS'])
         ylabel('ton')
         title('is the system following my capacity order?')
@@ -209,16 +215,17 @@ class H_simobj:
         
         hatmr=zop[:,0]
         figure(102)
-        plot(data['Sensor_msup.m_flow'])     
-        plot(pre_t,hatmr,'o')
+        plot(to_datetime(H_simtime2date(data['time'],'2018')),data['Sensor_msup.m_flow'])     
+        plot(to_datetime(H_simtime2date(pre_t,'2018')),hatmr,'o')
         ylabel('return flow rate')
         title('is the model for return m or T ok ?')
         
-        
+        figure()
         data.plot(x='time',y=[k for k in obj.key_y if 'Height[3]' in k])    
         plot(pre_t,hatx[:-1],'o')
         title('Model Validation: state of charge')
         
+        figure()
         data.plot(x='time',y=[k for k in obj.key_y if 'Output[1]' in k])
         mp.step(pre_t,hatphi,'o',where='post')
         title('Model Validation: $\phi$')    
@@ -280,6 +287,7 @@ class H_simobj:
         plot(data['time']/(3600*24),data[[k for k in obj.key_y if 'Output' in k]])
         legend([k for k in obj.key_y if 'Output' in k])
             #return IN
+        
     def mo2keys(obj,fmuinpy):
         UW=fmuinpy.get_model_variables(causality=0)
         Y=fmuinpy.get_model_variables(causality=1)
@@ -339,7 +347,7 @@ if __name__ is '__main__':
     from H_DP_Merced_Simple import H_DP_Merced_Simple
 
     #obj.getidmodel(idmodel='CASE900Load1576283834') # unused in DP
-    obj.MPCsetup(MPCobj=H_DP_Merced_Simple,Npday=2) 
+    obj.MPCsetup(MPCobj=H_DP_Merced_Simple,Npday=2,test=True) 
     #Q: sampling time of simluation output is the same as control implementation period?
     obj.does_local_follow_mpc(x0_val)
 #%% MPC evaulation inputs: starts, final time, IC

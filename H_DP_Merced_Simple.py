@@ -7,6 +7,7 @@
 # algorithm
 #==============================================================================
 #import cvxpy as cp
+from __future__ import print_function
 from pandas import *
 import numpy as np
 from numpy import *
@@ -36,27 +37,40 @@ class H_DP_Merced_Simple:
        #obj.f_IS=IS;
        # Cs = rho*V*Cv*(Th-Tc)
        
-       if len(varargindic) is not 0:              
+       if ('simobj' in varargindic.keys()) and ('test' not in varargindic.keys()):
            simobj=varargindic['simobj']
+           obj.paramlist=simobj.fmuinpy.get_model_variables(filter='H_par_*').keys()
+           obj.Qtonmax=2*simobj.fmuinpy.get('H_par_QCHL_ton')[0]; # two chillers
            obj.V=pi*simobj.fmuinpy.get('tankMB_H2_1.Radius')**2*(simobj.fmuinpy.get('tankMB_H2_1.h_startA')+simobj.fmuinpy.get('tankMB_H2_1.h_startB'))
            obj.rho=simobj.fmuinpy.get('tankMB_H2_1.mediumB.d')
            obj.cv=4.2 # kJ/kg-C
            obj.Cs=obj.rho*obj.V*obj.cv*(f2c(55)-f2c(40))# [kJ] worst case
            obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           obj.mmax=simobj.fmuinpy.get('mEva_flow_nominal')[0]
+           obj.COP=simobj.fmuinpy.get('H_par_COP_nominal')[0]
+           
        else:
+           obj.V=pi*20**2*15
            obj.rho=1e3
            obj.cv=4.2 # kJ/kg-C
-           obj.Cs_tonhr=1000*12
-           obj.Cs=tonhr2kJ(obj.Cs_tonhr)
+           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(55)-f2c(40))# [kJ] worst case
+           obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           try:
+               obj.Qtonmax=varargindic['Qtonmax'];#3000; # two chillers
+           except:
+               obj.Qtonmax=3000; # two chillers
+           obj.COP=7;
            
        
        
        # define grid
        obj.X=linspace(0.1,0.9,30)
        
-       obj.U=hstack((-linspace(ton2kW(1000),ton2kW(0.1),num=30),
-                     0,
-                     linspace(ton2kW(0.1),ton2kW(1000),num=30)))
+       
+       obj.U=hstack((-linspace(ton2kW(obj.Qtonmax),ton2kW(0.1),num=30),
+                     0.,
+                     linspace(ton2kW(0.1),ton2kW(obj.Qtonmax),num=30)))
+    
        obj.PRED=DataFrame()
 
     def f(obj,xk,uk,wk):
@@ -72,9 +86,9 @@ class H_DP_Merced_Simple:
         
         # note stage bounds aren't applied to this
         feasible=(0.1<=xkp1) & (xkp1<=0.9) \
-                & ( QDIS <= ton2kW(1e3)+ 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) ) \
-                & (-QDIS <= ton2kW(1e3) + 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) )  \
-                & (QCHL>=0) & (QCHL<=ton2kW(1e3))
+                & ( QDIS <= ton2kW(obj.Qtonmax)+ 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) ) \
+                & (-QDIS <= ton2kW(obj.Qtonmax) + 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) )  \
+                & (QCHL>=0) & (QCHL<=ton2kW(obj.Qtonmax))
                 
         return feasible
     
@@ -83,21 +97,29 @@ class H_DP_Merced_Simple:
         ER=wk[1]
         PnonHVAC=wk[2]
         Psolarpv=wk[3]
-        COP=7.
+        COP=obj.COP*1.
         stagecost=ER*max(1./COP*(QBL-uk)+PnonHVAC-Psolarpv,0);
         return stagecost
 
-
+    def M(obj,xk):
+        mier=1e6*min(xk-0.5,0)**2
+        return mier
+        
 
     def BellmanEq(obj,Ws):
         X=obj.X
         U=obj.U
         N=obj.Np
+        print("In Bellam, ",  "Np:",obj.Np, "W:", Ws.shape)
+        
         S=X.shape[0]
         C=U.shape[0]
         # K=1
         Vok=nan*ones((S,N+1));   # Optimal cost to go from k to N at x (x,k)|--> V*(x,k) in R
-        Vok[:,-1]=0;     # terminal cost
+        
+        for i in range(S):
+            Vok[i,-1]=obj.M(X[i]);     # terminal cost
+        print(Vok[:,-1].T)
         # Vok =
         #  k  0  1  2 .. N
         # x1 [            ]
@@ -163,18 +185,19 @@ class H_DP_Merced_Simple:
             plot(T[:-1],hstack((kW2ton(H_iscolumn(W[:,0])),kW2ton(UTR))),'-o')
             legend(['QBL','QDIS'])
             title('MPCthink')
-            print phik.shape
+            print(phik.shape)
             subplot(212)
             plot(T[:-1],hstack((H_iscolumn(W[:,2]),H_iscolumn(W[:,3]),phik)),'-o')
             legend(['Pnonhvac','Psolar','phik $'])
             
-        print phik.sum()
+        print(phik.sum())
         return x, phik
         
         
     def controller(obj,x0,W,*varargin):
         
         # solve Bellman equation
+        #print("Np:",obj.Np, "W:", W.shape)
         (Vok,Uok)=obj.BellmanEq(W)   
         # extract optimal control input traj for x[0]=x0
         x=nan*random.random((obj.Np+1,1))
@@ -189,28 +212,50 @@ class H_DP_Merced_Simple:
             phik[k]=obj.phi(x[k],UTR[k],wk)
             
         if len(varargin) is not 0:
-            if varargin:
-                figure(2)
-                subplot(211)
-                plot(T,x,'o-');grid(True);
-                ylabel('state of charge [%]')            
-                title('MPCthink')
-                subplot(212)
-                pp.step(T[:-1],kW2ton(UTR),'-o',where='post');#ylim([-1,1.5])
-                ylabel('optimal QDIS [ton]')
-                grid(True)
-                figure(3)
-                subplot(211)
-                plot(T[:-1],hstack((kW2ton(H_iscolumn(W[:,0])),kW2ton(UTR))),'-o')
-                legend(['QBL','QDIS'])
-                ylabel('ton')            
-                title('MPCthink')
-                print phik.shape
-                subplot(212)
-                plot(T[:-1],hstack((H_iscolumn(W[:,2]),H_iscolumn(W[:,3]),phik)),'-o')
-                legend(['Pnonhvac','Psolar','phik $'])
             
-        print phik.sum()
+            if varargin:
+                QCHL=H_iscolumn(W[:,0])-H_iscolumn(UTR)
+                figure(2)
+                    
+                subplot(311)
+                if mean(W[:,3])==0:      
+                    plot(T[:-1],kW2ton(QCHL),'ro-')
+                    plot(T[:-1],kW2ton(H_iscolumn(W[:,0])),'go-')
+                    legend(['QCHL$_{before}$','QBL'])
+                else:
+                    plot(T[:-1],kW2ton(QCHL),'bo-',linewidth=2)
+                    legend(['QCHL$_{before}$','QBL','QCHL$_{after}$'])
+                ylabel('Cooling ton')
+                xlim([0,24])
+                ylim([0,3000])
+                grid(True)
+                
+                subplot(312)
+                if mean(W[:,3])==0:             
+                    plot(T[:-1],H_iscolumn(QCHL/obj.COP),'ro-')
+                else:
+                    plot(T[:-1],H_iscolumn(QCHL/obj.COP),'bo-',linewidth=2)
+                    plot(T[:-1],H_iscolumn(W[:,3]),'go-')
+                    legend(['P$_{before}$','P$_{after}$','P$_{solar}$'])
+                ylabel('Power [kW]')
+                xlim([0,24])
+                ylim([0,2000])
+                grid(True)
+                
+                subplot(313)
+                if mean(W[:,3])==0:             
+                   plot(T,x,'ro-');grid(True);
+                else:
+                   plot(T,x,'bo-',linewidth=2);grid(True);
+                 
+                ylabel('State of Charge [%]')
+                grid(True)
+                xlabel('hour')
+                xlim([0,24])
+                ylim([0.4,0.8])
+                
+            
+        print(phik.sum())
         return UTR, phik.sum()
         
                 
@@ -218,15 +263,18 @@ class H_DP_Merced_Simple:
     def exeMPC(obj,cur_t,x0,W,**varargindic):
         if 'adjustNp' in varargindic.keys():
             if varargindic['adjustNp']:
-                W=obj.adjustNp(cur_t,x0,W)
+                Wf=obj.adjustNp(cur_t,x0,W)
+        else:
+            Wf=W;
         if 'wannaplot' in varargindic.keys():
             wannaplot=varargindic['wannaplot']
-        (Uop,phi)=obj.controller(x0,W,wannaplot)  
-        (x,phi)=obj.modelprediction(x0,W,Uop)
+        
+        (Uop,phi)=obj.controller(x0,Wf,wannaplot)  
+        (x,phi)=obj.modelprediction(x0,Wf,Uop)
         
         
         df=DataFrame(data={'cur_t':cur_t,'Uop':np.squeeze(Uop.T),'x':np.squeeze(x[:-1].T),'phi':np.squeeze(phi.T)})
-        print df.head(3)
+        print(df.head(3))
         
         obj.PRED=obj.PRED.append(df) # datasave
         return Uop
@@ -236,9 +284,10 @@ class H_DP_Merced_Simple:
             obj.Np=obj.Np0
         else: # reduce Np and the corresponding W
             obj.Np=obj.Np-1
-        print 'Np adjusted:', obj.Np
-        W=W[:obj.Np,:]
-        return W
+        print('Np adjusted:', obj.Np)
+        Wf=W[:obj.Np,:]
+        #print('in adjustNp', 'adjusted W:', Wf.shape, 'orginal W', W.shape)
+        return Wf
             
     def IOmapping(obj,Uop,Ws): # mapping from optimization variables to physical variables
         # conversion of decision variable to manipulatable input (defined by simobj.key_u)
@@ -280,7 +329,7 @@ class H_DP_Merced_Simple:
         for t in times:
             ydf=obj.PRED[obj.PRED['cur_t']==t]
             hr=(t+arange(0,ydf.shape[0])*obj.Ts*1.)/3600
-            print t, hr.size
+            print(t, hr.size)
             
             figure(10)
             subplot(311)
@@ -292,253 +341,39 @@ class H_DP_Merced_Simple:
                 
 #%% test object
 if __name__ is '__main__':
+    import scipy.signal
+    
     close('all')
     MOD=list()
     Ts_hr=1;
-    Np=2*24;
+    Np=1*24;
     Nblk=Np;
     
     T=arange(0,7*24*3600,3600)
-    W=hstack((H_schedule(T[:-1],[7,19],ton2kW(1e3),0),
-              H_schedule(T[:-1],[7,19],3,1),
-              H_schedule(T[:-1],[7,19],0*1000,0*1000), 
-              H_schedule(T[:-1],[7,19],0*500,0))) # Building load, price schedule, nonHVACP, Psolargen
-    
-        
+    W=hstack((filtfilt(3,H_schedule(T[:-1],[7,19],ton2kW(1.5*1e3),0)), #BL
+              H_schedule(T[:-1],[7,19],3,1),   # price
+              filtfilt(3,H_schedule(T[:-1],[7,19],0*1000,0)),  # PnonHVAC
+              filtfilt(3,H_schedule(T[:-1],[10,15],1*2000,0)))) #Psolar
+
     obj=H_DP_Merced_Simple(MOD,Ts_hr,Np,Nblk)
-    x0=0.2
+    x0=0.5
     cur_t=0
     
     # functional tests for some senarios
-    obj.exeMPC(cur_t,x0,W[:Np,:],wannaplot='show')
-    (Vok,Uok)=obj.BellmanEq(W)
+    obj.exeMPC(cur_t,x0,W[:Np,:],wannaplot=True)
+    #(Vok,Uok)=obj.BellmanEq(W)
     
-    #%% functional tests for adaptive scheme
-    obj=H_DP_Merced_Simple(MOD,Ts_hr,Np,Nblk)
-    start_t=0
-    xk=x0
-    for k in range(4):
-        cur_t=start_t+Ts_hr*3600*k
-        Uo=obj.exeMPC(cur_t,xk,W[k:(k+Np),:],wannaplot='show',adjustNp='y')
-        uk=Uo[0]
-        wk=W[k,:]
-        xk=obj.f(xk,uk,wk)
-  
-    
-    obj.analysis()
-    
-    
-#    def MPC(obj,cur_ts,CLdata,Tzdata,wkm1,SPLs,SPUs,Ws,Rates):
-#        # with updated measurement, i.e. y(k-1), u(k-1), estimate current (!) wall
-#        # hatx(k|k-1)=Ax(k-1|k-2)+Bu(k-1)+Ke
-#        obj.estimate_Tw(cur_ts,CLdata,Tzdata,wkm1)
-#        # with current wall temp, optitmize setpoint at k
-#        (SPopt,clk)=obj.optimize_SP(cur_ts,SPLs,SPUs,Ws,Rates)
-#        
-#        # predict average cooling power from k to k+1 with the decision made
-#        # haty(k)=Cx(k|k-1)+Du(k)
-#        obj.predict_AvgCoolingLoad(SPopt,Ws[0,:].T)
-#        
-#        return (SPopt,clk) 
-#        
+#    #%% functional tests for adaptive scheme
+#    obj=H_DP_Merced_Simple(MOD,Ts_hr,Np,Nblk)
+#    start_t=0
+#    xk=x0
+#    for k in range(30):
+#        cur_t=start_t+Ts_hr*3600*k
+#        Uo=obj.exeMPC(cur_t,xk,W[k:(k+Np),:],wannaplot=True,adjustNp=True)
+#        uk=Uo[0]
+#        wk=W[k,:]
+#        xk=obj.f(xk,uk,wk)
+#  
 #    
-#    def estimate_Tw(obj,cur_ts,CLdata,Tzdata,wkm1): 
-#        inno=CLdata-obj.hatCL # measured, predicted
-#        # estimate current 
-#        obj.hatx=obj.a*obj.hatx+obj.b*np.vstack((Tzdata,wkm1))+obj.k*np.mat(inno) # x(k+1|k)
-#        obj.MEASt.append(cur_ts)        
-#        obj.MEAST.append(Tzdata)
-#        obj.MEASCE.append(CLdata)
-#        if obj.verbose:
-#            #print('current mean temps are ', hatxmk.T)
-#            print('innovation is : ',inno, '[kW]')
-#            
-#    def predict_AvgCoolingLoad(obj,SPk,wk):
-#        obj.hatCL=obj.c*obj.hatx+obj.d*np.vstack((SPk,wk)) # y(k|k-1)=Cx(k|k-1)+Du(k)
-#    
-#        
-#    def predict_Np(obj,cur_ts,SPs,Ws):
-#        inputpreddata=np.hstack((np.array(SPs),np.array(Ws)))
-#        
-#        tpred=np.array(range(obj.Np))*obj.Ts    #[hr]
-#        T, Y, X = sp.signal.dlsim(obj.G,inputpreddata,t=tpred,x0=np.squeeze(np.array(obj.hatx)));
-#        obj.PREDT.append((cur_ts/3600+T.T)/24) # to day
-#        obj.PREDCE.append(Y.T)
-#        obj.HATX.append(obj.hatx.T)
-#        
-#        
-#    def optimize_SP(obj,cur_ts,SPLs,SPUs,Ws,Rates): # YL,YU,W,R are matlab row vector -types
-#        
-#        hatx=obj.hatx
-#		
-#        if SPLs.shape!=(obj.Np,obj.p):
-#            error()
-#        if SPUs.shape!=(obj.Np,obj.p):
-#            error()
-#        if Ws.shape!=(obj.Np,obj.mw):
-#            error()
-#        if Rates.shape!=(obj.Np,obj.p):
-#            error()
-#        # Time series to vector form
-##        YL=SPLs.reshape((SPLs.size,1),order='C') # scalar time series
-##        YU=SPUs.reshape((SPUs.size,1),order='C')             
-##        W=Ws.reshape((Ws.size,1),order='C')
-##        R=Rates.reshape((Rates.size,1),order='C')
-#
-#        # averaging future info for blocking
-##        YUblk=obj.Tr['yavg']*YU;
-##        YLblk=obj.Tr['yavg']*YL;
-##        Wblk=obj.Tr['wavg']*W;            
-##        Rblk=obj.Tr['uavg']*R;
-#
-##        obj.iter=obj.iter+1  
-##        
-##        YLblks=YLblk.reshape((obj.Nblk,obj.p),order='C')
-##        YUblks=YUblk.reshape((obj.Nblk,obj.p),order='C')
-##        Rblks=Rblk.reshape((obj.Nblk,obj.m),order='C')
-##        Wblks=Wblk.reshape((obj.Nblk,obj.mw),order='C')
-##        
-#        SPLblks=SPLs
-#        SPUblks=SPUs
-#        Wblks=Ws
-#        Cblks=Rates
-#        
-#        # cvxpy =================================================
-#        # Idea: givn r predict LOAD profile then calculate power
-#        
-#        x=cp.Variable((obj.n,obj.Nblk+1))# x(0)
-#        r=cp.Variable((obj.mc,obj.Nblk)); # r[0]:=y(1), r[Np-1]=y(N)
-#        vu=cp.Variable((1)) # general upperbound violation
-#        vl=cp.Variable((1)) # general lowerbound violation
-#        z=cp.Variable((1))  # demand target
-#        
-#        if obj.p!=obj.mc:
-#            error('')
-#            
-#        # additional AHU variables
-#        CL=cp.Variable((obj.p,obj.Nblk)) # cooling load (+)
-#        
-#        Pow=cp.Variable((obj.p,obj.Nblk)) 
-#        
-#        func=0
-#        constr=[]
-#        
-#        for k in range(obj.Nblk):
-#            # dynamic constraints
-#            constr +=[ x[:,k+1]==obj.ablk*x[:,k]+obj.bcblk*r[:,k]+np.squeeze(np.array(obj.bwblk*Wblks[k,:].T)), 
-#                       CL[:,k]== obj.cblk*x[:,k]+obj.dcblk*r[:,k]+np.squeeze(np.array(obj.dwblk*Wblks[k,:].T))]
-#            
-#            # temp bounds and demand constraints
-#            constr +=[np.squeeze(np.array(SPLblks[k,:]))-vl<=r[:,k], # comfort lower viol
-#                     r[:,k]<=np.squeeze(np.array(SPUblks[k,:]))+vu] # comfort upper viol
-#            constr +=[Pow[:,k] <=z] # demand
-#            
-#            for iz in range(obj.p):
-#                
-#                # objective function
-#                func +=Pow[iz,k]#significantly different behavior depending on objective function
-#                
-#                # physical constraints ============================S                
-#                constr +=[Pow[iz,k] == Cblks[k,iz]*(CL[iz,k]), 
-#                          CL[iz,k] >=0] # static HVAC map, Physical Var constraints
-#                
-#                
-#        # time independent objective functiotns: demand, comfort violation    
-#        func +=1e1*z +1e5*vu+1e5*vl
-#        # time independent constraints: IC, demand and comfort violation 
-#        constr += [x[:,0]==np.squeeze(np.array(obj.hatx)), 
-#                   z >= 0, vl >= 0, vu >= 0]
-#        problem = cp.Problem(cp.Minimize(func), constr)
-#        problem.solve(solver=cp.GLPK,verbose=False)#cp.CVXOPT, solver=cp.ECOS,      
-#        # cvxpy end =================================================
-##            print('s:',s.value)
-##            print('r:',r.value)
-##            print('vu:',vu.value)
-##            print('vl:',vl.value)
-##            print('u:',u.value)
-##            print('m:',m.value)
-##            print('d:',d.value)
-#        if problem.status in ['optimal', 'optimal_inaccurate']:
-#            flag=1
-#            SPk=np.mat(r[:,0].value) # to provide desired Q[0], I expect y[1]=r[1]
-#            CLk=np.mat(CL[:,0].value)
-#            
-#            if obj.verbose: #SPk.T[0]>=1:
-#                print(SPk.T, vu.value, vl.value)
-#                print('uc:',CLk)
-#            
-#            
-#            #analysis(obj,hatxk,UOPT,YU,YL,W,Rates)
-#        else:
-#            print(problem.status)
-#            SPk=np.mat(r[:,0].value) # to provide desired Q[0], I expect y[1]=r[1]
-#            CLk=np.mat(CL[:,0].value)
-#            print(SPk.T, vu.value, vl.value)
-#            error('no convergence??')
-#        del problem
-#        
-#            
-#            
-#        #print('# CONTROL DECISION WAS MADE==================================================\
-#        #===================================================================================') 
-#        
-#        
-#        obj.OPTSP.append(SPk.T)
-#        obj.predict_Np(cur_ts,r.value.T,Wblks)
-#        return (SPk.T,CLk.T) #==============================
-#
-#    def analysis(obj):
-#        close(302)
-#        figure(302)
-#        subplot(211)
-#        ts=np.vstack(obj.MEASt)
-#        N=len(obj.MEASt)
-#        plot(ts/(24*3600),np.vstack(obj.MEASCE),'r',linewidth=3);grid(True)
-#        for k in range(N):
-#            if k%(3*2)==0:
-#                plot(np.vstack(obj.PREDT)[k,:],np.vstack(obj.PREDCE)[k,:]);grid(True)
-#        xlim([ts[0]/(24*3600),ts[-1]/(24*3600)])
-#                
-#        subplot(212)
-#        pp.step(ts/(24*3600),np.vstack(obj.OPTSP),'r');grid(True)
-#        plot(ts/(24*3600),np.vstack(obj.MEAST));grid(True)
-#        xlim([ts[0]/(24*3600),ts[-1]/(24*3600)])
-#            
-##def obj_bd(obj,hatxk,YL,YU,W,R):
-##    p1p2=np.kron(np.ones((1,obj.Nblk)),obj.Pmat0)
-##    f=np.mat(np.array(R.T)*np.array(p1p2)) # [R1(1)P1(1), R2(1)P2(1), R1(2)P1(2), R2(2)P2(2)...]
-##    ff=np.split(np.squeeze(np.array(f)),obj.Nblk) #(R1(1)P1(1), R2(1)P2(1)), (R1(2)P1(2), R2(2)P2(2)), ...
-##    #f=np.squeeze(np.kron(R.T,obj.Pmat0))
-### minimize R1(1)P1(1)*u1(1)+ R2(1)P2(1)*u2(1)+R1(2)P1(2)*u1(2)+R2(2)P2(2)u2(2)+ d + uviol + lviol
-##    F=np.concatenate((f,np.mat(np.hstack((obj.w_on_d,1e2,1e2)))),1) # with demand cost comfort cost
-###==============================================================================
-### [P'u(1)  -d]<=0
-### [P'u(2)  -d]<=0
-### PU <=d            ==>  P U  -d       <=0
-### Ox+MU<=Yu  +u     ==>  M U     -u     <= (YU -Ox-Mw*W)
-### Yl-l<=Ox+MU       ==> -M U        -l  <= -(YL-Ox-Mw*W)
-###==============================================================================
-##    #Aie=np.concatenate((np.kron(np.mat(np.diag(np.asarray(R.T)[0])),obj.Pmat0),obj.Mc,-obj.Mc))
-##    Aie=np.concatenate((PnP_subfunc.H_blk_diag(ff),obj.Mc,-obj.Mc))
-##    
-##    #Aie=np.concatenate((np.kron(np.eye(obj.Nblk),obj.Pmat0),obj.Mc,-obj.Mc))
-##    Aie=np.concatenate((Aie,block_diag(-np.ones((obj.Nblk,1)),-np.ones((obj.Nblk*obj.p,1)),-np.ones((obj.Nblk*obj.p,1)))),1)
-##    bie=np.concatenate((np.zeros((obj.Nblk,1)),YU-obj.Ob*hatxk-obj.Mw*W, -(YL-obj.Ob*hatxk-obj.Mw*W)))
-##    ub =np.concatenate((np.tile(obj.ub0,(1,obj.Nblk)),np.mat(np.hstack((np.asscalar(100*obj.Pmat0*obj.ub0.T),100,100)))),1)
-##    return (F,Aie,bie,ub)
-#
-#
-#
-##def H_shift(Y,ynewT):
-##	if Y.shape[0]==1:
-##		error('give me matlab like time series')
-##	dumY=np.roll(Y,-1,0)
-##	dumY[-1,:]=ynewT
-##	YNEW=dumY
-##	return YNEW
-## [y1.T 		   [y2.T
-##  y2.T		-> 		y3.T
-##  y3.T				y4.T
-##  y4.T]     		ynewT]
-         
-         
+#    obj.analysis()
+    
