@@ -16,6 +16,7 @@ import scipy as sp
 import scipy.interpolate
 import control.matlab as ctool
 import pyfmi
+from H_DP_Merced_Simple import *
 
 class H_simobj:
     def __init__(obj,**varagindic):
@@ -34,7 +35,7 @@ class H_simobj:
         obj.fmuinpy=pyfmi.load_fmu(obj.myfmu)
            
         obj.MOD=dict()
-        obj.DATA=DataFrame()
+        obj.DATA=[DataFrame(),DataFrame()]
         
         obj.key_u=varagindic['key_u']
         obj.key_w=varagindic['key_w']
@@ -44,31 +45,38 @@ class H_simobj:
         obj.md=len(obj.key_w)
         obj.n=len(obj.key_x)
         
-        obj._sim_opts=obj.fmuinpy.simulate_options()
+                
+        obj.u_schedule=varagindic['schedule']['u']        
+        obj.w_schedule=varagindic['schedule']['w']
+        obj.t_schedule=varagindic['schedule']['t']
+        
+        
         #opt['solver']='Radau5ODE'
-        #opt['Radau5ODE_options']['rtol']=1e-6
-        obj._sim_opts['result_handling']='memory' 
+        #opt['Radau5ODE_options']['rtol']=1e-6 
         #obj._sim_opts['filter'] = obj.key_u + obj.key_w + obj.key_y + list(obj.key_x)
+    
+    def Ctrlsetup(obj,**varargindic):
+        obj.Np= int(varargindic['Npday']*24*3600./obj.dt)     # 24 hr prediction
+        obj.Nblk= obj.Np#Np/6 # 30 min size blk for time scale seperation
+        obj.Ts_hr=1.*obj.dt/3600 # in hr
+        obj.MPCobj = varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj)   
+        obj.Convobj=varargindic['Convobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj)   
         
-    def simulate_schedule(obj,x0_val,schedule,**varargindic):
-        
-        obj.u_schedule=schedule['u']        
-        obj.w_schedule=schedule['w']
-        obj.t_schedule=schedule['t']
-        
-        obj.fmuinpy=pyfmi.load_fmu(obj.myfmu)
-        
+    def simulate_schedule(obj,x0_val,**varargindic):
+        del obj.fmuinpy
+        obj.fmuinpy=pyfmi.load_fmu(obj.myfmu)        
         obj.fmuinpy.set(obj.key_x,x0_val)
-        
+        #obj.fmuinpy.set_log_level(0)
+        obj._sim_opts=obj.fmuinpy.simulate_options()
+        obj._sim_opts['result_handling']='memory'
         
         IN=(obj.key_u+obj.key_w,hstack((obj.t_schedule,obj.u_schedule,obj.w_schedule)))
         obj._sim_opts['ncp'] = IN[1].shape[0]-1 #Specify a number of output points that should be returned
         res0=obj.fmuinpy.simulate(start_time=obj.t_schedule[0],final_time=obj.t_schedule[-1], options=obj._sim_opts, input=IN)
-        obj.res0=res0
-
-        if len(varargindic)!=0:
-            if 'wannaplot' in varargindic.keys():
-                obj.plotresult(res=obj.res0)
+        obj.res0=res0        
+        
+        if 'wannaplot' in varargindic.keys():
+            obj.plotresult(res=obj.res0)
         
         return res0, IN
         
@@ -94,22 +102,15 @@ class H_simobj:
         import scipy as sp
         obj.idmodel=idmodel
         obj.MOD=sp.io.loadmat(obj.idmodel)
-        
-    def MPCsetup(obj,**varargindic):
-        
-        obj.Np= int(varargindic['Npday']*24*3600./obj.dt)     # 24 hr prediction
-        obj.Nblk= obj.Np#Np/6 # 30 min size blk for time scale seperation
-        obj.Ts_hr=1.*obj.dt/3600 # in hr
-        if 'test' in varargindic:  
-            obj.MPCobj=varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj,test=varargindic['test'])
-        else:
-            obj.MPCobj=varargindic['MPCobj'](obj.MOD,obj.Ts_hr,obj.Np,obj.Nblk,simobj=obj)
-
    
     def does_local_follow_mpc(obj,x0_val): # one shot MPC and feed it to system (open-loop control)
     
         #obj.myfmu=pymodelica.compile_fmu(obj.modelname,obj.modelicafile,target='me',version='2.0')
+        del obj.fmuinpy
         obj.fmuinpy=pyfmi.load_fmu(obj.myfmu)
+        obj.fmuinpy.set(obj.key_x,x0_val)
+        obj._sim_opts=obj.fmuinpy.simulate_options()
+        obj._sim_opts['result_handling']='memory'
         
         pre_t=obj.start_time+linspace(0,obj.MPCobj.Np0-1,obj.MPCobj.Np0)*obj.dt # in sec 
         xk=x0_val    
@@ -127,21 +128,25 @@ class H_simobj:
         (hatx,hatphi)=obj.MPCobj.modelprediction(xk,Ws,Uop,1)
         #Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot=False,adjustNp='y')
         
-        (uop,zop)=obj.MPCobj.IOmapping(Uop,Ws)
+        (uop,zop)=IOmapping(obj.MPCobj,Uop,Ws)
         
         IN=(obj.key_u+obj.key_w,np.array(hstack((H_iscolumn(pre_t),uop,Ws))))
         
         # system response to control
             
-        obj.fmuinpy.set(obj.key_x,xk)
         res=obj.fmuinpy.simulate(start_time=pre_t[0],final_time=pre_t[-1],options = obj._sim_opts, input=IN)
     
         obj.plotresult_sysspec(res,pre_t,hatx,uop,zop,Uop,Ws,hatphi)
     
-    def evaluate_mpc(obj,x0_val): 
+    def evaluate_Ctrl(obj,x0_val,**varargindic): 
     
         #obj.myfmu=pymodelica.compile_fmu(obj.modelname,obj.modelicafile,target='me',version='2.0')
+        del obj.fmuinpy        
         obj.fmuinpy=pyfmi.load_fmu(obj.myfmu)
+        #obj.fmuinpy.set_log_level(6)
+        obj._sim_opts=obj.fmuinpy.simulate_options()
+        obj._sim_opts['result_handling']='memory'
+
         
         xk=x0_val   
         
@@ -166,13 +171,20 @@ class H_simobj:
                 error('The size of W prediction should be the same as the original prediction horizon')
             
             
-            #optimization
-            Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot=False,adjustNp='y')
-            (uop,zop)=obj.MPCobj.IOmapping(Uop,Ws)
-        
-            IN=(obj.key_u+obj.key_w,np.array(hstack((H_iscolumn(pre_t[:2]),kron(array([[1],[1]]),uop[0,:]),
-                                                     kron(array([[1],[1]]),Ws[0,:]))))) # Fixed inputs, no interpolation
-        
+            # controller
+            if varargindic['control'] is 'MPC':
+                Uop=obj.MPCobj.exeMPC(cur_t,xk,Ws,wannaplot=False,adjustNp='y')
+                (uop,zop)=IOmapping(obj.MPCobj,Uop,Ws)
+                print('u*:', uop[0,:])
+                print('x:', xk)
+            else:
+                uop=H_iscolumn(obj.Convobj.exeConv(cur_t,xk,Ws)).T
+            
+            
+           
+            IN=(obj.key_u+obj.key_w,np.array(hstack((H_iscolumn(pre_t[:2]),kron(np.array([[1],[1]]),uop[0,:]),
+                                                     kron(np.array([[1],[1]]),Ws[0,:]))))) # Fixed inputs, no interpolation
+            
             # system response to control
             if k != 0:
                 obj._sim_opts['initialize'] = False
@@ -182,15 +194,18 @@ class H_simobj:
             res=obj.fmuinpy.simulate(start_time=cur_t,final_time=cur_t+obj.dt,options = obj._sim_opts, input=IN)
             xk=mat(res['Sensor_Height[3]'][-1])
             
-            obj.storeresponse(res)
-            
-    
-    def storeresponse(obj,res):
+            obj.storeresponse(res,control=varargindic['control'])
+
+    def storeresponse(obj,res,**varargindic):
+        
         data=DataFrame(columns=obj.key_u+obj.key_y+obj.key_w)  
         for k in obj.key_u+obj.key_y+obj.key_w:
             data[k]=res[k][:-1]
         #data.index=data.time
-        obj.DATA=obj.DATA.append(data)
+        if 'MPC' is varargindic['control']:
+            obj.DATA[1]=obj.DATA[1].append(data)
+        elif 'Conv' is  varargindic['control']:
+            obj.DATA[0]=obj.DATA[0].append(data)
         
 #%% system specific             
         
@@ -230,19 +245,26 @@ class H_simobj:
         mp.step(pre_t,hatphi,'o',where='post')
         title('Model Validation: $\phi$')    
         
-    def analysis_performance(obj):
-        data=obj.DATA
+    def analysis_performance(obj,**varargindic):
+        if 'MPC' is varargindic['control']:
+            data=obj.DATA[1]
+        elif 'Conv' is  varargindic['control']:
+            data=obj.DATA[0]
+        
         figure(1000)
         plot(data['time']/(3600*24),kW2ton(data['Output[3]']),linewidth=3)     
         plot(data['time']/(3600*24),kW2ton(data['Output[4]']),'r',linewidth=3)
-        times=np.unique(obj.MPCobj.PRED['cur_t'].values)
-        for t in times:
-            ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
-            hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
-            plot(hr*1./24,kW2ton(ydf['Uop']),'--')
         grid(True)
         legend(['QCHL','QDIS'])
         ylabel('ton')
+        
+        if varargindic['control'] is 'MPC':
+            times=np.unique(obj.MPCobj.PRED['cur_t'].values)
+            for t in times:
+                ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
+                hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
+                plot(hr*1./24,kW2ton(ydf['Uop']),'--')
+        
         
         figure(1001)
         plot(data['time']/(3600*24),data[[k for k in obj.key_y if '.m_flow' in k]].apply(kgs2gpm))
@@ -254,23 +276,27 @@ class H_simobj:
         
         figure(1002)
         plot(data['time']/(3600*24),data[[k for k in obj.key_y if 'Height[3]' in k]],linewidth=3)
-        times=np.unique(obj.MPCobj.PRED['cur_t'].values)
-        for t in times:
-            ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
-            hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
-            plot(hr*1./24,ydf['x'],'--')
         grid(True)
         title('model validation: state of charge')
+
+        if varargindic['control'] is 'MPC':                
+            times=np.unique(obj.MPCobj.PRED['cur_t'].values)
+            for t in times:
+                ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
+                hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
+                plot(hr*1./24,ydf['x'],'--')
         
         figure(1003)
         plot(data['time']/(3600*24),data[[k for k in obj.key_y if 'Output[1]' in k]],linewidth=3)
-        times=np.unique(obj.MPCobj.PRED['cur_t'].values)
-        for t in times:
-            ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
-            hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
-            mp.step(hr*1./24,ydf['phi'] ,where='post')
         grid(True)
         title('model validation: $ \phi $')
+        
+        if varargindic['control'] is 'MPC':                                
+            times=np.unique(obj.MPCobj.PRED['cur_t'].values)
+            for t in times:
+                ydf=obj.MPCobj.PRED[obj.MPCobj.PRED['cur_t']==t]
+                hr=(t+arange(0,ydf.shape[0])*obj.MPCobj.Ts*1.)/3600
+                mp.step(hr*1./24,ydf['phi'] ,where='post')
         
         
         #if 'wannaplot' in varargindic.keys():
@@ -287,6 +313,7 @@ class H_simobj:
         plot(data['time']/(3600*24),data[[k for k in obj.key_y if 'Output' in k]])
         legend([k for k in obj.key_y if 'Output' in k])
             #return IN
+        return data
         
     def mo2keys(obj,fmuinpy):
         UW=fmuinpy.get_model_variables(causality=0)
@@ -302,16 +329,16 @@ if __name__ is '__main__':
     
     close('all')
     
-    modelname='Merced.CoolingPlantNew.Chiller_Storage_Only_V2_MPC'
-    modelicafile='/home/adun6414/Work/CERC_UCM/Merced/CoolingPlantNew/Chiller_Storage_Only_V2_MPC.mo'
-    dt=30*60; # 30 min sampling time
+    modelname='Merced.CoolingPlantNew.Chiller_Storage_CoolingTower_V2_MPC'
+    modelicafile='/home/adun6414/Work/CERC_UCM/Merced/CoolingPlantNew/Chiller_Storage_CoolingTower_V2_MPC.mo'
+    dt=60*60; # 30 min sampling time
     start_time=H_date2simtime(to_datetime('2018-08-01 00:00'),'2018')
     final_time=H_date2simtime(to_datetime('2018-08-01 23:45'),'2018')
     simtimes=arange(start_time,final_time,dt)
     simtimedate=date_range(start=H_simtime2date(start_time,'2018'),end=H_simtime2date(final_time,'2018'),freq=str(int(30*60./60))+'T')
 
     
-    key_x='x0'
+    key_x='H_par_x0'
     x0_val=0.2; # initial state of charge
     # inputs (controllable variables)
     key_u=['ChillerON','SP_mCH', 'TCHeSP']
@@ -321,18 +348,16 @@ if __name__ is '__main__':
     key_y=['Output[1]','Output[2]','Output[3]','Output[4]','Sensor_TCHWS.T','Sensor_TCHWR.T','Sensor_msup.m_flow','Sensor_mCHi.m_flow','Sensor_mS.m_flow','time',
           'Sensor_Tstorage[1].y','Sensor_Tstorage[2].y','Sensor_Height[1]','Sensor_Height[2]','Sensor_Height[3]']
     
-    idmodel=('CASE900Load1576283834')
+    idmodel=list()
     
     # specify disturbances
     t_schedule=arange(start_time,final_time,dt)
-    obj=H_simobj(dt=dt,start_time=start_time,final_time=final_time,modelname=modelname,modelicafile=modelicafile,idmodel=idmodel,
-                 key_u=key_u,key_w=key_w,key_y=key_y,key_x=key_x)
-    CHON=H_schedule(t_schedule,array([7,19]),1,1)
-    mEva_flow_nominal=obj.fmuinpy.get('mEva_flow_nominal')
-    SP_mCH=H_schedule(t_schedule,array([7,19]),0.*mEva_flow_nominal,0.9*mEva_flow_nominal)
-    TCHeSP=H_schedule(t_schedule,array([7,19]),4,4) # C
-    QBL=H_schedule(t_schedule,array([7,19]),ton2kW(500), ton2kW(0.1*500)) # kW
-    ER=H_schedule(t_schedule,array([7,19]),2,1) #$/kWh
+    CHON=H_schedule(t_schedule,np.array([7,19]),1,1)
+    mEva_flow_nominal=gpm2kgs(3000);#sobj.fmuinpy.get('mEva_flow_nominal')
+    SP_mCH=H_schedule(t_schedule,np.array([7,19]),0.*mEva_flow_nominal,0.9*mEva_flow_nominal)
+    TCHeSP=H_schedule(t_schedule,np.array([7,19]),4,4) # C
+    QBL=H_schedule(t_schedule,np.array([7,19]),ton2kW(500), ton2kW(0.1*500)) # kW
+    ER=H_schedule(t_schedule,np.array([7,19]),2,1) #$/kWh
     PnonHVAC=H_schedule(t_schedule,[7,19],0*1000,0*1000) # kW
     Psolarpv=H_schedule(t_schedule,[7,19],0*500,0) # kW
               
@@ -340,16 +365,17 @@ if __name__ is '__main__':
     w=hstack((QBL,ER,PnonHVAC,Psolarpv))
     
     schedule={'u': u, 'w': w, 't': H_iscolumn(t_schedule)}
-# conventional control simulation
-    (res0,IN0)=obj.simulate_schedule(x0_val,schedule)
-
-#%%MPC configuration
-    from H_DP_Merced_Simple import H_DP_Merced_Simple
-
-    #obj.getidmodel(idmodel='CASE900Load1576283834') # unused in DP
-    obj.MPCsetup(MPCobj=H_DP_Merced_Simple,Npday=2,test=True) 
-    #Q: sampling time of simluation output is the same as control implementation period?
-    obj.does_local_follow_mpc(x0_val)
+    obj=H_simobj(dt=dt,start_time=start_time,final_time=final_time,modelname=modelname,modelicafile=modelicafile,idmodel=idmodel,
+                 key_u=key_u,key_w=key_w,key_y=key_y,key_x=key_x,schedule=schedule)
+    
+    #(res0,IN0)=obj.simulate_schedule(x0_val,wannaplot=True)
+#%% Conventional & MPC control simulation
+    from H_DP_Merced_Simple import *
+    obj.Ctrlsetup(Convobj=H_Conv_Merced_Simple,MPCobj=H_DP_Merced_Simple,Npday=2)
+    obj.evaluate_Ctrl(x0_val,control='Conv')
+    obj.analysis_performance(control='Conv')
+    
 #%% MPC evaulation inputs: starts, final time, IC
-    obj.evaluate_mpc(x0_val)
-    obj.analysis_performance()
+    obj.does_local_follow_mpc(x0_val)
+    obj.evaluate_Ctrl(x0_val,control='MPC')
+    obj.analysis_performance(control='MPC')

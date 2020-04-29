@@ -20,8 +20,7 @@ from H_DP_Merced_Simple import H_DP_Merced_Simple
 Qtonmax=3000
 MOD=list()
 Ts_hr=1;
-Np=1*24;
-Nblk=Np;
+Np=1*24;Nblk=Np;
 
 T=arange(0,7*24*3600,3600)
 

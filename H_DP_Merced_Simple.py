@@ -48,6 +48,8 @@ class H_DP_Merced_Simple:
            obj.Cs_tonhr=kJ2tonhr(obj.Cs)
            obj.mmax=simobj.fmuinpy.get('mEva_flow_nominal')[0]
            obj.COP=simobj.fmuinpy.get('H_par_COP_nominal')[0]
+           obj.xmax=0.9
+           obj.xmin=0.1
            
        else:
            obj.V=pi*20**2*15
@@ -60,7 +62,8 @@ class H_DP_Merced_Simple:
            except:
                obj.Qtonmax=3000; # two chillers
            obj.COP=7;
-           
+           obj.xmax=0.9
+           obj.xmin=0.1
        
        
        # define grid
@@ -85,7 +88,7 @@ class H_DP_Merced_Simple:
         QCHL=QBL-QDIS; # equality constraints (optimial distribution prob)
         
         # note stage bounds aren't applied to this
-        feasible=(0.1<=xkp1) & (xkp1<=0.9) \
+        feasible=(obj.xmin<=xkp1) & (xkp1<=obj.xmax) \
                 & ( QDIS <= ton2kW(obj.Qtonmax)+ 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) ) \
                 & (-QDIS <= ton2kW(obj.Qtonmax) + 0*gpm2kgs(2000)*obj.cv*(f2c(50)-f2c(40)) )  \
                 & (QCHL>=0) & (QCHL<=ton2kW(obj.Qtonmax))
@@ -119,7 +122,7 @@ class H_DP_Merced_Simple:
         
         for i in range(S):
             Vok[i,-1]=obj.M(X[i]);     # terminal cost
-        print(Vok[:,-1].T)
+        #print(Vok[:,-1].T)
         # Vok =
         #  k  0  1  2 .. N
         # x1 [            ]
@@ -157,6 +160,7 @@ class H_DP_Merced_Simple:
                 # end of optimization (all inputs) at a given x and k
             #end of optimization for all x at k
         #end of optimization for all k
+        #print(Vok,'optimal cost to go')
         return Vok,Uok
         
     def modelprediction(obj,x0,W,U,*varargin):
@@ -190,7 +194,7 @@ class H_DP_Merced_Simple:
             plot(T[:-1],hstack((H_iscolumn(W[:,2]),H_iscolumn(W[:,3]),phik)),'-o')
             legend(['Pnonhvac','Psolar','phik $'])
             
-        print(phik.sum())
+        #print(phik.sum())
         return x, phik
         
         
@@ -252,14 +256,14 @@ class H_DP_Merced_Simple:
                 grid(True)
                 xlabel('hour')
                 xlim([0,24])
-                ylim([0.4,0.8])
+                ylim([0.4,1])
                 
             
-        print(phik.sum())
+        #print(phik.sum())
         return UTR, phik.sum()
         
                 
-#%% system speicific
+# system speicific
     def exeMPC(obj,cur_t,x0,W,**varargindic):
         if 'adjustNp' in varargindic.keys():
             if varargindic['adjustNp']:
@@ -268,8 +272,21 @@ class H_DP_Merced_Simple:
             Wf=W;
         if 'wannaplot' in varargindic.keys():
             wannaplot=varargindic['wannaplot']
+        else:
+            wannaplot=False;
         
-        (Uop,phi)=obj.controller(x0,Wf,wannaplot)  
+#        if x0<=obj.xmin: # I don't need as long as there exists a solution u which puts the next state within that bounds
+#            print('lower than xbound')
+#            x0=obj.xmin;
+#        elif x0>=obj.xmax:
+#            print('higher than xbound')
+#            x0=obj.xmax;
+#        else:
+#            print('x is ok')
+#            x0=x0;
+        
+        
+        (Uop,phi)=obj.controller(x0,Wf)#obj.controller(x0,Wf,wannaplot)  
         (x,phi)=obj.modelprediction(x0,Wf,Uop)
         
         
@@ -289,40 +306,7 @@ class H_DP_Merced_Simple:
         #print('in adjustNp', 'adjusted W:', Wf.shape, 'orginal W', W.shape)
         return Wf
             
-    def IOmapping(obj,Uop,Ws): # mapping from optimization variables to physical variables
-        # conversion of decision variable to manipulatable input (defined by simobj.key_u)
-        CHON=ones((obj.Np,1))
-        SP_mCH=nan*zeros((obj.Np,1))
-        TCHeSP=nan*zeros((obj.Np,1))
-        hatmr=nan*zeros((obj.Np,1))
-        
-        Tsc=f2c(39)
-        Tsh=f2c(50)
-        Tr=f2c(40)+5
-        
-        for k in range(obj.Np):
-            QBL=Ws[k,0]
-            if QBL<0:
-                error()
-            hatmr[k]=QBL/(4.2*5) # assume 5 oc drop
-            
-            if Uop[k]>0: # discharging
-                QDIS=Uop[k]
-                QCHL=QBL-QDIS
-                msdis=QDIS/(obj.cv*(Tr-Tsc))
-                SP_mCH[k]=hatmr[k]-msdis
-                TCHeSP[k]=Tr-QCHL/(SP_mCH[k]*obj.cv)
-            if Uop[k]<0: # charging
-                QCHA=-Uop[k]
-                QCHL=QBL+QCHA
-                Tsup0=4;
-                mscha=QCHA/(obj.cv*(Tsh-Tsup0))
-                SP_mCH[k]=hatmr[k]+mscha
-                Tmix=mscha/(hatmr[k]+mscha)*Tsh+hatmr[k]/(hatmr[k]+mscha)*Tr
-                TCHeSP[k]=Tmix-QCHL/(SP_mCH[k]*obj.cv)
-        uop=np.hstack((CHON,SP_mCH,TCHeSP))
-        zop=hatmr
-        return uop,zop      
+    
         
     def analysis(obj):
         times=np.unique(obj.PRED['cur_t'].values)
@@ -338,7 +322,120 @@ class H_DP_Merced_Simple:
             plot(hr,ydf['x']);grid(True);title('x')
             subplot(313)
             plot(hr,ydf['phi']);grid(True);title('phi')
-                
+#%%  conventional control          
+class H_Conv_Merced_Simple:
+    def __init__(obj,MOD,Ts_hr,Np,Nblk,**varargindic):
+       obj.Np0=Np;
+       obj.Np=obj.Np0;
+       obj.Ts_hr=Ts_hr;
+       obj.Ts=Ts_hr*3600;
+       
+       #obj.f_CHOL=lambda ;
+       #obj.f_CHCL=CHCLM;
+       #obj.f_IS=IS;
+       # Cs = rho*V*Cv*(Th-Tc)
+       
+       if ('simobj' in varargindic.keys()) and ('test' not in varargindic.keys()):
+           simobj=varargindic['simobj']
+           obj.paramlist=simobj.fmuinpy.get_model_variables(filter='H_par_*').keys()
+           obj.Qtonmax=2*simobj.fmuinpy.get('H_par_QCHL_ton')[0]; # two chillers
+           obj.V=pi*simobj.fmuinpy.get('tankMB_H2_1.Radius')**2*(simobj.fmuinpy.get('tankMB_H2_1.h_startA')+simobj.fmuinpy.get('tankMB_H2_1.h_startB'))
+           obj.rho=simobj.fmuinpy.get('tankMB_H2_1.mediumB.d')
+           obj.cv=4.2 # kJ/kg-C
+           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(55)-f2c(40))# [kJ] worst case
+           obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           obj.mmax=simobj.fmuinpy.get('mEva_flow_nominal')[0]
+           obj.COP=simobj.fmuinpy.get('H_par_COP_nominal')[0]
+           obj.xmax=0.9
+           obj.xmin=0.1
+           
+       else:
+           obj.V=pi*20**2*15
+           obj.rho=1e3
+           obj.cv=4.2 # kJ/kg-C
+           obj.Cs=obj.rho*obj.V*obj.cv*(f2c(55)-f2c(40))# [kJ] worst case
+           obj.Cs_tonhr=kJ2tonhr(obj.Cs)
+           try:
+               obj.Qtonmax=varargindic['Qtonmax'];#3000; # two chillers
+           except:
+               obj.Qtonmax=3000; # two chillers
+           obj.COP=7;
+           obj.xmax=0.9
+           obj.xmin=0.1
+           
+    def exeConv(obj,cur_t,x0,W,*varargin): # conventional control
+        QBL=W[0,0];        
+        ER=W[0,1];
+        
+        if ER>1: #on-peak price period
+            if x0>=obj.xmin:
+                SP_mCH=0.01*obj.mmax; # full discharge
+            else:
+                SP_mCH=obj.mmax;# chiller only
+        else: # off-peak price period
+            if x0<=obj.xmax:
+                SP_mCH=obj.mmax#Uop=-ton2kW(obj.Qtonmax-QBL)*mat([1]) # full charge after meeting load
+            else: 
+                SP_mCH=0.01*obj.mmax;
+        CHON=1
+        TCHeSP=f2c(39)
+        uop=np.hstack((CHON,SP_mCH,TCHeSP)) 
+        return uop
+
+def IOmapping(obj,Uop,Ws): # mapping from optimization variables to physical variables
+    # conversion of decision variable to manipulatable input (defined by simobj.key_u)
+    Np=Uop.shape[0] # for conventional control, the Np becames 1
+    if Uop.shape[0] is not obj.Np:        
+        print('This is not MPC!!!!')
+    
+    CHON=ones((Np,1))
+    SP_mCH=nan*zeros((Np,1))
+    TCHeSP=nan*zeros((Np,1))
+    hatmr=nan*zeros((Np,1))
+    
+    Tsc=f2c(39)
+    Tsh=f2c(50)
+    Tr=f2c(40)+5
+    
+    for k in range(Np):
+        QBL=Ws[k,0]
+        if QBL<0:
+            error()
+        hatmr[k]=QBL/(4.2*5) # assume 5 oc drop
+        
+        if Uop[k]>0: # discharging
+            QDIS=Uop[k]
+            QCHL=QBL-QDIS
+            msdis=QDIS/(obj.cv*(Tr-Tsc))
+            SP_mCH[k]=hatmr[k]-msdis
+            if SP_mCH[k] !=  0: # BUG?
+                TCHeSP[k]=Tr-QCHL/(SP_mCH[k]*obj.cv)
+            else:
+                TCHeSP[k]=Tr
+        if Uop[k]<0: # charging
+            QCHA=-Uop[k] #QCHARGE
+            QCHL=QBL+QCHA
+            Tsup0=4;
+            mscha=QCHA/(obj.cv*(Tsh-Tsup0))
+            SP_mCH[k]=hatmr[k]+mscha
+            Tmix=mscha/(hatmr[k]+mscha)*Tsh+hatmr[k]/(hatmr[k]+mscha)*Tr
+            
+            if SP_mCH[k] !=  0:
+                TCHeSP[k]=Tmix-QCHL/(SP_mCH[k]*obj.cv)
+            else:
+                TCHeSP[k]=Tmix
+        if Uop[k]==0: # Confirmed bug
+            SP_mCH[k]=0.;
+            TCHeSP[k]=Tr;
+            
+           
+    uop=np.hstack((CHON,SP_mCH,TCHeSP))
+    if any(np.isnan(uop)):
+        print('nan')
+
+    zop=hatmr
+    return uop,zop      
+        
 #%% test object
 if __name__ is '__main__':
     import scipy.signal
@@ -356,11 +453,14 @@ if __name__ is '__main__':
               filtfilt(3,H_schedule(T[:-1],[10,15],1*2000,0)))) #Psolar
 
     obj=H_DP_Merced_Simple(MOD,Ts_hr,Np,Nblk)
-    x0=0.5
+    x0=0.99
     cur_t=0
     
     # functional tests for some senarios
     obj.exeMPC(cur_t,x0,W[:Np,:],wannaplot=True)
+    
+    
+    
     #(Vok,Uok)=obj.BellmanEq(W)
     
 #    #%% functional tests for adaptive scheme
