@@ -192,7 +192,7 @@ class H_simobj:
                 obj.fmuinpy.set(obj.key_x,xk)
             
             res=obj.fmuinpy.simulate(start_time=cur_t,final_time=cur_t+obj.dt,options = obj._sim_opts, input=IN)
-            xk=mat(res['Sensor_Height[3]'][-1])
+            xk=mat(res['Sensor_Height[3]'][-1]) # state estimation
             
             obj.storeresponse(res,control=varargindic['control'])
 
