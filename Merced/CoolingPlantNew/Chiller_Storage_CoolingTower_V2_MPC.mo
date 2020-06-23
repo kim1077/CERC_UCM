@@ -3,21 +3,24 @@ model Chiller_Storage_CoolingTower_V2_MPC "Put another chiller"
   package CondensorWater =  Buildings.Media.Water;
   package ChilledWater =  Buildings.Media.Water;
 
-  parameter Real x0=0.7 " initial state of charge";
-  parameter Modelica.SIunits.Temp_C Tsc=4 " intial temp of cold stroage in C";
-  parameter Modelica.SIunits.Temp_C Tsh=12 " intial temp of hot stroage in C";
-  parameter Modelica.SIunits.Power P_nominal=-per.QEva_flow_nominal/per.COP_nominal
+  parameter Real H_par_x0=0.7 " initial state of charge";
+  parameter Modelica.SIunits.Temp_C H_par_Tsc=4 " intial temp of cold stroage in C";
+  parameter Modelica.SIunits.Temp_C H_par_Tsh=12 " intial temp of hot stroage in C";
+  parameter Real H_par_QCHL_ton = 1400;
+  parameter Modelica.SIunits.HeatFlowRate QEva_flow_nominal = H_par_QCHL_ton*3.5*1e3;
+  parameter Real H_par_COP_nominal= 7;
+
+  parameter Modelica.SIunits.Power P_nominal= QEva_flow_nominal/ H_par_COP_nominal
     "Nominal compressor power (at y=1)";
   parameter Modelica.SIunits.TemperatureDifference dTEva_nominal=10
     "Temperature difference evaporator inlet-outlet";
   parameter Modelica.SIunits.TemperatureDifference dTCon_nominal=10
     "Temperature difference condenser outlet-inlet";
-  parameter Real COPc_nominal = 3 "Chiller COP";
-  parameter Modelica.SIunits.MassFlowRate mEva_flow_nominal=per.mEva_flow_nominal
+  parameter Modelica.SIunits.MassFlowRate mEva_flow_nominal= 2*(2*H_par_QCHL_ton)*0.06
     "Nominal mass flow rate at evaporator";
 
-  parameter Modelica.SIunits.AbsolutePressure dP0=1240;
-  parameter Modelica.SIunits.MassFlowRate mCon_flow_nominal=per.mCon_flow_nominal
+  parameter Modelica.SIunits.AbsolutePressure dP0=740;
+  parameter Modelica.SIunits.MassFlowRate mCon_flow_nominal= 3*(2*H_par_QCHL_ton)*0.06
     "Nominal mass flow rate at condenser";
 
     Modelica.Blocks.Logical.GreaterThreshold greaterThreshold(threshold=0)
@@ -32,12 +35,12 @@ model Chiller_Storage_CoolingTower_V2_MPC "Put another chiller"
   parameter
     Buildings.Fluid.Chillers.Data.ElectricEIR.ElectricEIRChiller_McQuay_WSC_471kW_5_89COP_Vanes
     per(
-    QEva_flow_nominal(displayUnit="kW") = -1000000,
-    COP_nominal=7,
+    QEva_flow_nominal= -1*QEva_flow_nominal,
+    COP_nominal=H_par_COP_nominal,
     PLRMax=1,
     PLRMinUnl=0.4,
-    mEva_flow_nominal=1000*2*0.06,
-    mCon_flow_nominal=1000*3*0.06,
+    mEva_flow_nominal=mEva_flow_nominal,
+    mCon_flow_nominal=mCon_flow_nominal,
     capFunT={0.70790824,-0.002006568,-0.00259605,0.030058776,-0.0010564344,0.0020457036},
     EIRFunT={0.5605438,-0.01377927,6.57072e-005,0.013219362,0.000268596,-0.0005011308},
     EIRFunPLR={0.17149273,0.58820208,0.23737257}) "Chiller performance data"
@@ -69,10 +72,10 @@ model Chiller_Storage_CoolingTower_V2_MPC "Put another chiller"
   Buildings.Fluid.Sensors.Temperature Sensor_TCHWR(redeclare package Medium =
         ChilledWater)
     annotation (Placement(transformation(extent={{220,-94},{240,-74}})));
-  TankMB_H2            tankMB_H2_1(T_startA=273.15 + Tsh,
-    T_startB=273.15 + Tsc,
-    h_startB=x0*15,
-    h_startA=(1 - x0)*15,     redeclare package MediumA = ChilledWater,
+  Components.TankMB_H3 tankMB_H2_1(T_startA=273.15 + H_par_Tsh,
+    T_startB=273.15 + H_par_Tsc,
+    h_startB=H_par_x0*15,
+    h_startA=(1 - H_par_x0)*15,     redeclare package MediumA = ChilledWater,
       redeclare package MediumB = ChilledWater)
     annotation (Placement(transformation(extent={{114,-66},{154,-26}})));
   Buildings.Fluid.Sensors.MassFlowRate Sensor_mS(redeclare package Medium =
@@ -321,7 +324,7 @@ equation
       smooth=Smooth.None));
   connect(chi1.port_b1, res1.port_a) annotation (Line(points={{4,-52},{-2,-52},
           {-2,-86},{-8,-86}}, color={0,127,255}));
-  connect(Sensor_mS.port_b, tankMB_H2_1.PortB)
+  connect(Sensor_mS.port_b,tankMB_H2_1. PortB)
     annotation (Line(points={{100,-36},{100,-62},{134,-62}},
                                                           color={0,127,255}));
   connect(Pump_CHW_Secondary.port_b, Sensor_msup.port_a)
@@ -455,7 +458,7 @@ equation
   connect(kPI.mCH, Sensor_mCHi.m_flow);
   connect(kPI.TCHi, Sensor_TCHi.T);
   connect(kPI.TCHe, Sensor_TCHe.T);
-  connect(kPI.Ts[:], tankMB_H2_1.T[:]);
+  connect(kPI.Ts[:],tankMB_H2_1. T[:]);
   connect(kPI.Tr, Sensor_TCHWR.T);
   plantpower = chi1.P + chi2.P + Pump_CHW_Primary.P + Pump_CHW_Secondary.P +
     pumCW.P + cooTow.PFan;
@@ -465,14 +468,14 @@ equation
   connect(Sensor_TCHi.port, Pump_CHW_Primary.port_b) annotation (Line(points={{44,
           -74},{48,-74},{48,-94},{52,-94}}, color={0,127,255}));
   annotation (Icon(coordinateSystem(preserveAspectRatio=false, extent={{-400,
-            -160},{380,120}}),
+            -200},{380,120}}),
                          graphics={Text(
           extent={{-84,38},{106,-92}},
           lineColor={28,108,200},
           fillColor={28,108,200},
           fillPattern=FillPattern.None,
           textString="CHL")}),                                   Diagram(
-        coordinateSystem(preserveAspectRatio=false, extent={{-400,-160},{380,
+        coordinateSystem(preserveAspectRatio=false, extent={{-400,-200},{380,
             120}}),
         graphics={Text(
           extent={{-114,126},{-54,80}},

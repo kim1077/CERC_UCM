@@ -17,8 +17,8 @@ from numpy import *
 from H_utility import *
 
 #%% condensor water flow rate is constantly controlled.
-startdate='2018-08-01 00:00'
-enddate='2018-08-06 23:45'#'2019-08-3' 
+startdate='2018-01-01 00:00'#'2018-08-01 00:00'
+enddate='2019-11-30 23:50'#'2018-08-06 23:45'#'2019-08-3'
 dates=date_range(start=startdate,end=enddate,freq='15T')
 DATA=DataFrame(index=dates)
 DATA.index.name='Date'
@@ -54,8 +54,11 @@ RH=RH.reindex(dates,method='nearest')
 Weather=Toa.merge(RH,on='Date',how='inner')
 Weather.columns=['Toa','RH']
 Weather=Weather.dropna()
-from CoolProp.HumidAirProp import HAPropsSI
-Twb = HAPropsSI('B','T',Weather.iloc[:,0].to_numpy()+273.15,'R',Weather.iloc[:,1].to_numpy()*1./100,'P',101325) #HumRat(AirH2O,T=T_a_in , P=p_atm,B=T_wb_in ) "lbm/lbm"                "Humidity ratio"
+#from CoolProp.HumidAirProp import HAPropsSI
+#Twb = HAPropsSI('B','T',Weather.iloc[:,0].to_numpy()+273.15,'R',Weather.iloc[:,1].to_numpy()*1./100,'P',101325) #HumRat(AirH2O,T=T_a_in , P=p_atm,B=T_wb_in ) "lbm/lbm"                "Humidity ratio"
+from  H_Psychrometric import *
+Twb = TwTRH(Weather.iloc[:,0].to_numpy()+273.15,Weather.iloc[:,1].to_numpy()) #HumRat(AirH2O,T=T_a_in , P=p_atm,B=T_wb_in ) "lbm/lbm"                "Humidity ratio"
+
 Weather['Twb']=k2c(Twb)
 #for k in range(Weather.shape[0]):
 #    try:

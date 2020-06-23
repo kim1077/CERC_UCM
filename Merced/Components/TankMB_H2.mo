@@ -26,10 +26,10 @@ model TankMB_H2 "Modified Notations: 1-->H, 2-->C"
     annotation (Placement(transformation(extent={{-10,-90},{10,-70}}, rotation=
             0)));
   MediumA.BaseProperties mediumA(
-    preferredMediumStates=true);
+    preferredMediumStates=true); // calling a model, i.e an object + equations
   MediumB.BaseProperties mediumB(
-    preferredMediumStates=true);
-  parameter SI.Length Radius=20 "radius of tank" annotation (Dialog(group="Tank Dimensions"));
+    preferredMediumStates=true); // calling a model, i.e an object + equations
+  parameter SI.Length Radius=10;//20 "radius of tank" annotation (Dialog(group="Tank Dimensions"));
   parameter SI.Length tTank=0.01 "thickness of tank" annotation (Dialog(group="Tank Dimensions"));
   parameter SI.Area TankCA=3.14*Radius^2 "cross sectional area" annotation (Dialog(group="Tank Dimensions"));
   parameter SI.Area WallCA=2*3.14*Radius*tTank "wall cross sectional area" annotation (Dialog(group="Tank Dimensions"));

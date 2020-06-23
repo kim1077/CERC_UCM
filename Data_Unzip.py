@@ -116,7 +116,7 @@ def Unzip_all(New_data):
         j=0
         for izipfile in zippedfilename:
             if '.zip' in izipfile: # pick only zipfile
-                print izipfile
+                print(izipfile)
                 k=k+1
                 #Create a zipfile object for the ith zip file
                 with ZipFile(izipfile) as obj:
@@ -136,10 +136,10 @@ def Unzip_all(New_data):
                                # renaming
                                os.rename('H_extracted/d2018/'+jfileinzip,'H_extracted/d2018/combined/'+naming(obj.filename)+'.csv')
                                
-                           print '==========extracted =====================\n'
+                           print('==========extracted =====================\n')
                            j=j+1 
-        print 'total zipfile', k
-        print 'total extractted zipfile', j
+        print('total zipfile', k)
+        print('total extractted zipfile', j)
     
         # treatment files which do not have 'combined' cvs file
         for izipfile in zippedfilename:
@@ -179,7 +179,8 @@ def Unzip_all(New_data):
         filenames=os.listdir(os.getcwd()) # unzipped cvs
             
     
-        for i in range(len(filenames)):   
+        for i in range(len(filenames)):
+            print('reading csv-data 2018, 2019:'+filenames[i])
             if ('Toa' in filenames[i]) or ('RH'  in filenames[i]) or ('z'  in filenames[i]):
                 d=read_csv(filenames[i],header=1,usecols=[0,1,2])
                 # or sckiprows=1 rather than header=1
@@ -196,6 +197,7 @@ def Unzip_all(New_data):
     #%% merge 2018, 2019 data
     data=dict()
     for i in range(len(filenames)):
+        print('merging data 2018, 2019:'+filenames[i])
         name=filenames[i].split('.')[0]
         data[name]=merge(d2018[name],d2019[name],how='outer') # outer =union
         
@@ -209,15 +211,18 @@ def Unzip_all(New_data):
     #df.sort_values(by='Date',ascending=True) # time increasing
     
     #%% EXCEL TIME TO DATETIME OBJ, drop excel time, set index as date and sort by date
-    
+    os.chdir('/home/adun6414/Work/CERC_UCM/unzipped_RawData')
     for i in range(len(filenames)):
+        print('excel time to datetime obj, drop excel time, set index as date and sort by date:'+filenames[i])
         name=filenames[i].split('.')[0]
         data[name]['Date']=data[name]['Excel Time'].apply(xldate_to_datetime)
         data[name]=data[name].drop('Excel Time',axis='columns')
         data[name]=data[name].set_index('Date')
         data[name]=data[name].sort_values(by='Date',ascending=True)
-    
-    
+        
+        data[name].to_csv(name+'.csv',header=True)
+        
+    os.chdir(currentfolder)
     return data
     
 if __name__=='__main__':
